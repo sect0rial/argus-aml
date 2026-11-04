@@ -1,0 +1,25 @@
+# Publishes the tagged version to npm with provenance, so npm shows which commit built the package.
+# Needs npm trusted publishing for argus-aml to list this repository and this workflow file
+# (npmjs.com → package → Settings → Trusted publishing). No token is stored anywhere.
+name: publish
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest
+      - run: node --check bin/init.js && node bin/init.js init --print
+        env:
+          HOME: /tmp/argus-aml-check
+      - run: npm publish --provenance --access public
