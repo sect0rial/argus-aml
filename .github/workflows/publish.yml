@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
+          # no registry-url: it would write a placeholder token to .npmrc and block OIDC trusted publishing
       - run: npm install -g npm@latest
       - run: node --check bin/init.js && node bin/init.js init --print
         env:
