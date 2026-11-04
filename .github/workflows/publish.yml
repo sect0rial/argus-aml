@@ -23,3 +23,5 @@ jobs:
         env:
           HOME: /tmp/argus-aml-check
       - run: npm publish --provenance --access public
+      - if: failure()
+        run: grep -ihE 'oidc|exchange|trusted|provenance|401|403|404' ~/.npm/_logs/*.log | head -30
