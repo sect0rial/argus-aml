@@ -1,7 +1,8 @@
 # argus-aml
 
 Add the [Argus API](https://daertho.com/founders/)'s compliance tools to your AI agent: sanctions and PEP screening,
-adverse media, face checks, e-signatures and financial-crime typologies, as MCP tools.
+adverse media, face checks, document reviews, safeguarding reconciliation, e-signatures and financial-crime typologies,
+as MCP tools.
 
 ```bash
 npx argus-aml init
