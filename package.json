@@ -1,6 +1,6 @@
 {
   "name": "argus-aml",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Add the Argus API's compliance tools (sanctions and PEP screening, adverse media, face checks, document reviews, safeguarding reconciliation, e-signatures, typologies) to your AI agent.",
   "keywords": ["aml", "sanctions", "pep", "kyc", "compliance", "mcp", "claude-code", "cursor", "codex", "argus", "daertho"],
   "homepage": "https://daertho.com/founders/",
@@ -11,5 +11,6 @@
   "bin": { "argus-aml": "bin/init.js" },
   "files": ["bin", "README.md", "LICENSE"],
   "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test" },
   "publishConfig": { "access": "public", "provenance": true }
 }

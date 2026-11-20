@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 "use strict";
-// npx argus-aml init: get a sandbox key (or take --key) and add the Argus MCP server to the agents on this machine.
+// npx argus-aml init: get a sandbox key (or take yours) and add the Argus MCP server to the agents on this machine.
 //
 // Everything this script does, and nothing else:
 //   1. POST https://argus.unbackoffice.com/v1/founder/sandbox-key, only when no key is given or already saved
@@ -12,18 +12,96 @@
 //        Windsurf      ~/.codeium/windsurf/mcp_config.json
 //        Gemini CLI    ~/.gemini/settings.json
 // It sends nothing else anywhere and collects no telemetry. `--print` shows these steps without doing them.
+//
+// Your own key: `--key-stdin` asks for it without showing it (or reads it from a pipe), and ARGUS_API_KEY in the
+// environment works too. `--key ak_...` still works, but it leaves the key in your shell history.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const API = (process.env.ARGUS_API_URL || "https://argus.unbackoffice.com").replace(/\/$/, "");
+const ok = (s) => console.log("✓ " + s);
+const warn = (s) => console.error("! " + s);
+const fail = (s) => { console.error("✗ " + s); process.exit(1); };
+const mask = (key) => (key ? key.slice(0, 6) + "…" : "");
+
+const DEFAULT_API = "https://argus.unbackoffice.com";
+
+// The key is sent to this URL and the URL is written into the agent configs. Anything other than the default must
+// be https (http on this machine only) and confirmed with ARGUS_ALLOW_CUSTOM_URL=1.
+function apiBase() {
+  const raw = (process.env.ARGUS_API_URL || "").trim();
+  if (!raw) return DEFAULT_API;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch (e) {
+    fail("ARGUS_API_URL is not a valid URL. Unset it to use " + DEFAULT_API + ".");
+  }
+  const plain = !u.username && !u.password && !u.search && !u.hash;
+  const url = (u.origin + u.pathname).replace(/\/+$/, "");
+  if (plain && url === DEFAULT_API) return DEFAULT_API;
+  if (!plain) fail("ARGUS_API_URL must be a plain base URL, with no credentials, query or fragment.");
+  const local = u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  if (u.protocol !== "https:" && !local) fail("ARGUS_API_URL must be an https URL (http is accepted for localhost only).");
+  if (process.env.ARGUS_ALLOW_CUSTOM_URL !== "1") {
+    fail("ARGUS_API_URL points at " + u.host + ". Your key would be sent there and that address written into your " +
+      "agent configs. Set ARGUS_ALLOW_CUSTOM_URL=1 if that is intended, or unset ARGUS_API_URL.");
+  }
+  return url;
+}
+
+const API = apiBase();
 const MCP = API + "/mcp";
 const HOME = os.homedir();
 const KEY_FILE = path.join(HOME, ".config", "argus", "key");
-const ok = (s) => console.log("✓ " + s);
-const fail = (s) => { console.error("✗ " + s); process.exit(1); };
-const mask = (key) => (key ? key.slice(0, 6) + "…" : "");
+
+// A key goes into an HTTP header, JSON and TOML: printable ASCII only, no spaces, quotes or backslashes.
+const validKey = (key) => /^[\x21\x23-\x5b\x5d-\x7e]{8,256}$/.test(key);
+
+// Read a key from standard input: hidden prompt in a terminal, otherwise whatever is piped in.
+function readKey() {
+  const stdin = process.stdin;
+  return new Promise((resolve) => {
+    let typed = "";
+    stdin.setEncoding("utf8");
+    if (!stdin.isTTY) {
+      stdin.on("data", (c) => { typed += c; });
+      stdin.on("end", () => resolve(typed.trim()));
+      return;
+    }
+    process.stderr.write("API key (hidden): ");
+    stdin.setRawMode(true);
+    stdin.resume();
+    const done = () => {
+      stdin.setRawMode(false);
+      stdin.pause();
+      stdin.removeListener("data", onData);
+      process.stderr.write("\n");
+    };
+    const onData = (chunk) => {
+      for (const ch of chunk) {
+        if (ch === "\r" || ch === "\n" || ch === "\u0004") { done(); return resolve(typed.trim()); }
+        if (ch === "\u0003") { done(); process.exit(130); }
+        if (ch === "\u007f" || ch === "\b") typed = typed.slice(0, -1);
+        else typed += ch;
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+// Write a file that only its owner can read. The permissions are set before any content is written, also when
+// the file already existed with wider ones.
+function writePrivate(file, text) {
+  const fd = fs.openSync(file, "w", 0o600);
+  try {
+    try { fs.fchmodSync(fd, 0o600); } catch (e) { /* not supported on this platform */ }
+    fs.writeSync(fd, text);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 function argValue(args, name) {
   const i = args.indexOf(name);
@@ -41,7 +119,8 @@ async function sandboxKey() {
   }
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.api_key) fail(d.detail || "Couldn't create a sandbox key. Try again shortly.");
-  return d.api_key;
+  if (!validKey(String(d.api_key))) fail("The server's reply didn't contain a usable key. Try again shortly.");
+  return String(d.api_key);
 }
 
 function savedKey() {
@@ -53,9 +132,10 @@ function savedKey() {
 }
 
 function saveKey(key) {
-  fs.mkdirSync(path.dirname(KEY_FILE), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(KEY_FILE, key + "\n", { mode: 0o600 });
-  fs.chmodSync(KEY_FILE, 0o600);
+  const dir = path.dirname(KEY_FILE);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch (e) { /* not supported on this platform */ }
+  writePrivate(KEY_FILE, key + "\n");
   return KEY_FILE;
 }
 
@@ -76,8 +156,7 @@ function writeJsonEntry(file, entry) {
   }
   cfg.mcpServers = { ...(cfg.mcpServers || {}), argus: entry };
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
+  writePrivate(file, JSON.stringify(cfg, null, 2) + "\n");
   return true;
 }
 
@@ -89,8 +168,7 @@ function writeTomlTable(file, lines) {
   if (re.test(text)) text = text.replace(re, (m, at) => block + (at + m.length < text.length ? "\n" : ""));
   else text = text.replace(/\s*$/, "") + (text.trim() ? "\n\n" : "") + block;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, text, { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
+  writePrivate(file, text);
   return true;
 }
 
@@ -122,7 +200,8 @@ const AGENTS = [
     file: path.join(HOME, ".codex", "config.toml"),
     found() { return fs.existsSync(path.dirname(this.file)); },
     add(key) {
-      return writeTomlTable(this.file, ['url = "' + MCP + '"', 'http_headers = { "X-API-Key" = "' + key + '" }']);
+      // JSON.stringify gives a valid TOML basic string for these values
+      return writeTomlTable(this.file, ["url = " + JSON.stringify(MCP), 'http_headers = { "X-API-Key" = ' + JSON.stringify(key) + " }"]);
     },
   },
   {
@@ -164,13 +243,29 @@ function printPlan(given) {
 async function main() {
   const args = process.argv.slice(2);
   if (args[0] !== "init") {
-    console.log("Usage: npx argus-aml init [--key ak_...] [--print]");
-    console.log("  --key    use a key you already have (your live key, after Daertho issues one)");
-    console.log("  --print  show what init would do on this machine without doing it");
+    console.log("Usage: npx argus-aml init [--key-stdin] [--print]");
+    console.log("  --key-stdin   use a key you already have (your live key, after Daertho issues one): asks for it");
+    console.log("                without showing it, or reads it from a pipe");
+    console.log("  ARGUS_API_KEY in the environment is used the same way");
+    console.log("  --key ak_...  still works, but leaves the key in your shell history");
+    console.log("  --print       show what init would do on this machine without doing it");
     process.exit(args.length && !["-h", "--help"].includes(args[0]) ? 1 : 0);
   }
   // a key saved by an earlier run is kept: running init again must never swap a live key for a sandbox one
-  const given = argValue(args, "--key") || process.env.ARGUS_API_KEY || savedKey();
+  const fromArg = argValue(args, "--key");
+  const fromStdin = args.includes("--key-stdin");
+  if (fromArg && fromStdin) fail("Use --key-stdin or --key, not both.");
+  if (fromArg) {
+    warn("--key leaves your key in your shell history, and other programs on this machine can see it while this runs.");
+    warn("Next time use --key-stdin, or set ARGUS_API_KEY in the environment.");
+  }
+  const typed = fromStdin ? await readKey() : "";
+  if (fromStdin && !typed) fail("No key was read from standard input.");
+  const given = typed || fromArg || process.env.ARGUS_API_KEY || savedKey();
+  if (given && !validKey(given)) {
+    fail("That isn't a usable API key: it must be 8 to 256 printable characters with no spaces, quotes or backslashes." +
+      (typed || fromArg || process.env.ARGUS_API_KEY ? "" : " It was read from " + KEY_FILE + "; delete that file and run this again."));
+  }
   if (args.includes("--print")) return printPlan(given);
 
   const key = given || (await sandboxKey());
