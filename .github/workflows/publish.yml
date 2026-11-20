@@ -1,27 +1,54 @@
-# Publishes the tagged version to npm with provenance, so npm shows which commit built the package.
-# Needs npm trusted publishing for argus-aml to list this repository and this workflow file
-# (npmjs.com → package → Settings → Trusted publishing). No token is stored anywhere.
+# Publishes a version tag to npm with provenance, so npm shows which commit built the package.
+# Uses npm trusted publishing (npmjs.com → argus-aml → Settings → Trusted publishing: this repository, this
+# workflow file, environment npm-publish). No token is stored anywhere.
+#
+# Only a version tag (v1.2.3) starts it, the tag must be the version in package.json on main, and the publish
+# job waits for approval in the npm-publish environment. That job is the only one that can ask for an identity
+# token. Actions are pinned to a commit and npm to a version, so nothing that runs here changes unless this
+# file does.
 name: publish
 on:
   push:
-    tags: ["v*"]
-  workflow_dispatch:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 permissions:
   contents: read
-  id-token: write
 jobs:
-  publish:
+  check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          node-version: 22
-          # no registry-url: it would write a placeholder token to .npmrc and block OIDC trusted publishing
-      - run: npm install -g npm@latest
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.4
+      - name: The tag must be the version in package.json, on main
+        run: |
+          test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - run: node --check bin/init.js && node bin/init.js init --print
         env:
           HOME: /tmp/argus-aml-check
+      - run: npm test
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.4
+          # no registry-url: it would write a placeholder token to .npmrc and block trusted publishing
+      - run: npm install -g npm@12.2.1
       - run: npm publish --provenance --access public
       - if: failure()
         run: grep -ihE 'oidc|exchange|trusted|provenance|401|403|404' ~/.npm/_logs/*.log | head -30
